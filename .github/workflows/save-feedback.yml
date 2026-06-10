@@ -1,0 +1,70 @@
+name: Save SA Feedback to CSV
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  save-feedback:
+    if: startsWith(github.event.issue.title, '[SA-FEEDBACK]')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Parse issue and update feedback.csv
+        env:
+          ISSUE_BODY: ${{ github.event.issue.body }}
+        run: |
+          python3 - <<'PY'
+          import os, re, json, csv
+          body=os.environ.get('ISSUE_BODY','')
+          m=re.search(r'```json\s*(.*?)\s*```', body, re.S)
+          if not m:
+              raise SystemExit('No JSON block found in issue body')
+          data=json.loads(m.group(1))
+          rows=data.get('rows',[])
+          cols=['Cluster ID','HHID','PMAID','Work Order Number','SA Owner','Appointment Number','Reason for Pending','By which Date Connect','Submitted Time']
+          path='feedback.csv'
+          existing=[]
+          if os.path.exists(path):
+              with open(path,newline='',encoding='utf-8-sig') as f:
+                  existing=list(csv.DictReader(f))
+          by_id={r.get('Appointment Number',''):r for r in existing if r.get('Appointment Number','')}
+          for r in rows:
+              clean={c:str(r.get(c,'')) for c in cols}
+              by_id[clean['Appointment Number']]=clean
+          with open(path,'w',newline='',encoding='utf-8-sig') as f:
+              w=csv.DictWriter(f,fieldnames=cols)
+              w.writeheader()
+              w.writerows(by_id.values())
+          PY
+
+      - name: Commit feedback.csv
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add feedback.csv
+          git commit -m "Update SA feedback from issue #${{ github.event.issue.number }}" || echo "No changes to commit"
+          git push
+
+      - name: Close issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: 'Feedback saved into feedback.csv automatically.'
+            });
+            await github.rest.issues.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              state: 'closed'
+            });
